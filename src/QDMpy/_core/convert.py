@@ -71,9 +71,10 @@ def b111_to_bxyz(
         unit_vector[2] * k - unit_vector[1] * 1j * ky - unit_vector[0] * 1j * kx
     )  # calculate the filter frequency response associated with the x component
 
-    map_x = np.fft.ifft2(e * x_filter)
-    map_y = np.fft.ifft2(e * y_filter)
+   
     map_z = np.fft.ifft2(e * z_filter)
+    map_x = np.fft.ifft2(map_z * x_filter)
+    map_y = np.fft.ifft2(map_z * y_filter)
     return np.stack([map_x.real, map_y.real, map_z.real])
 
 
