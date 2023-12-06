@@ -116,11 +116,5 @@ if __name__ == "__main__":
 
 
 def test_data_location():
-    if sys.platform == "linux":
-        return Path("/media/data/Dropbox/FOV18x")
-    elif sys.platform == "darwin":
-        return Path("/Users/mike/Dropbox/FOV18x")
-    elif sys.platform == "win32":
-        return Path(r"D:\Dropbox\FOV18x")
-    else:
-        raise NotImplementedError
+    return TEST_DATA_PATH / "utrecht_test_data"
+
