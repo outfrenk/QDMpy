@@ -23,7 +23,7 @@ from pathlib import Path
 
 import matplotlib
 
-from src.QDMpy import test_data_location
+from QDMpy import test_data_location
 
 matplotlib.use("Agg")
 
