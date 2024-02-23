@@ -73,8 +73,9 @@ def b111_to_bxyz(
 
    
     map_z = np.fft.ifft2(e * z_filter)
-    map_x = np.fft.ifft2(map_z * x_filter)
-    map_y = np.fft.ifft2(map_z * y_filter)
+    map_x = np.fft.ifft2(e * z_filter * x_filter)
+    map_y = np.fft.ifft2(e * z_filter * y_filter)
+
     return np.stack([map_x.real, map_y.real, map_z.real])
 
 
