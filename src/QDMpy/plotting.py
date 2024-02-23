@@ -533,7 +533,8 @@ def check_fit_pixel(qdm_obj: QDM, idx: int) -> Tuple[plt.Figure, plt.Axes]:
     # noinspection PyTypeChecker
     f, ax = plt.subplots(1, 2, figsize=(10, 4), sharex=False, sharey=True)
     polarities = ["+", "-"]
-    model = [None, models.esrsingle, models.esr15n, models.esr14n][qdm_obj.model_name]
+    model = [None, models.gauss1d, models.esr15n, models.esr14n][qdm_obj.fit.model['n_peaks']]
+    # model = [None, models.esrsingle, models.esr15n, models.esr14n][qdm_obj.fit.model['n_peaks']]
     print(f"IDX: {idx}, Model: {model.__name__}")
     lst = ["pol/side"] + qdm_obj.fit.model_params + ["chi2"]
     header = " ".join([f"{i:>8s}" for i in lst])

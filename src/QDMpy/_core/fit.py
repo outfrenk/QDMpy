@@ -360,7 +360,6 @@ class Fit:
             return self._states
 
         idx = self._param_idx(param)
-
         if param == "mean_contrast":
             return np.mean(self._fit_results[:, :, :, idx], axis=-1)  # type: ignore[index]
 
@@ -528,12 +527,30 @@ class Fit:
         # reshape the data into a single array with (n_pix*n_pol, n_freqs)
         n_pol, n_pix, n_freqs = data.shape
         data = data.reshape((-1, n_freqs))
-        initial_parameters = initial_parameters.reshape((-1, self.n_parameter))
         n_pixel = data.shape[0]
         constraints = self.get_constraints_array(n_pixel)
         constraint_types = self.get_constraint_types()
 
-        results = gf.fit_constrained(
+        # restructure array because GAUSS1D has other order arguments
+        # actually GAUSS1D is normal, but the lorentzians have been programmed in a weird way
+        if self._model["func_name"] == "GAUSS1D":
+            # print(constraints[:, [4, 5]])
+            # print(constraint_types)
+            # constraints[:, [4, 5]] = -1 * constraints[:, [5, 4]]
+            # contr = constraint_types[2].copy()
+            # if contr == 1:
+            #     constraint_types[2] = 2
+            # elif contr == 2:
+            #     constraint_types[2] = 1
+            # print(constraints_types)
+            # print(constraints[:, [4, 5]])
+            constraint_types = constraint_types[[2, 0, 1, 3]]
+            initial_parameters = initial_parameters[:, :, [2, 0, 1, 3]]
+            constraints = constraints[:, [4, 5, 0, 1, 2, 3, 6, 7]]
+            initial_parameters[:, :, 0] *= -1
+
+        initial_parameters = initial_parameters.reshape((-1, self.n_parameter))
+        parameters, states, chi_squares, number_iterations, comp_time = gf.fit_constrained(
             data=np.ascontiguousarray(data, dtype=np.float32),
             user_info=np.ascontiguousarray(freq, dtype=np.float32),
             constraints=np.ascontiguousarray(constraints, dtype=np.float32),
@@ -544,9 +561,13 @@ class Fit:
             weights=None,
             model_id=self.model_id,
             max_number_iterations=QDMpy.SETTINGS["fit"]["max_number_iterations"],
-            tolerance=QDMpy.SETTINGS["fit"]["tolerance"],
-        )
-
+            tolerance=QDMpy.SETTINGS["fit"]["tolerance"]
+            )
+        if self._model["func_name"] == "GAUSS1D":
+            parameters[:, 3] -= 1.0  # offset correction gaussian
+            parameters[:, 0] *= -1
+            parameters = parameters[:, [1, 2, 0, 3]]
+        results = parameters, states, chi_squares, number_iterations, comp_time
         return list(results)
 
     def reshape_results(self, results: List[NDArray]) -> List[NDArray]:

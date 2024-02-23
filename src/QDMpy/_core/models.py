@@ -39,6 +39,53 @@ def lorentzian_peak(f, center, width, contrast, model):
     delta = f - center
     model[:] = contrast * sq_width / (delta**2 + sq_width)
 
+@guvectorize(
+    [(float64[:], float64, float64, float64, float64[:])],
+    "(n),(),(),()->(n)",
+    forceobj=True,
+)
+def gauss_peak(f, center, width, contrast, model):
+    """ Gaussian peak
+
+    Calculates a single Gaussian peak
+
+    Args:
+        f : array_like
+            Frequency axis
+        center : float
+            Center frequency of the peak
+        width : float
+            Width of the peak
+        contrast : float
+            Contrast of the peak
+        model : array_like
+            Model array to be filled with the model
+    """
+    # model[:] = contrast * (1 / (width * (np.sqrt(2*np.pi)))) * (
+    #     np.exp((-1.0 / 2.0) * (((f - center) / width)**2))
+    #     )
+    model[:] = contrast * np.exp( -(f - center)**2 / (2 * width**2))
+
+
+@guvectorize([(float64[:], float64[:], float64[:])], "(n),(m)->(n)", forceobj=True)
+def gauss1d(x:NDArray, parameter:NDArray, model:NDArray) -> NDArray:
+    """Trying to fit a 1d Gaussian function
+
+    Args:
+        x (np.ndarray): x values
+        parameter (np.ndarray): parameters
+            parameter[0] = center
+            parameter[1] = width
+            parameter[2] = contrast
+            parameter[3] = offset
+
+    Returns:
+        np.ndarray: y values
+    """
+    center, width, c0, offset = parameter
+
+    model[:] = (1 + offset - gauss_peak(x, center, width, c0))
+
 
 @guvectorize([(float64[:], float64[:], float64[:])], "(n),(m)->(n)", forceobj=True)
 def esr14n(x:NDArray, parameter:NDArray, model:NDArray) -> NDArray:
@@ -196,10 +243,10 @@ IMPLEMENTED = {
     "GAUSS1D": {
         "func_name": "GAUSS1D",
         "n_peaks": 1,
-        "func": None,
-        "params": ["contrast", "center", "width", "offset"],
+        "func": gauss1d,
+        "params": ["center", "width", "contrast",  "offset"],
         "model_id": 0,
-        "name": "GAUSS_MISC",
+        "name": "GAUSS_1D",
     },
     "ESR14N": {
         "func_name": "ESR14N",
@@ -226,7 +273,7 @@ IMPLEMENTED = {
         "name": "SINGLE_MISC.",
     },
 }
-PEAK_TO_TYPE = {1: "ESRSINGLE", 2: "ESR15N", 3: "ESR14N"}
+PEAK_TO_TYPE = {1: "GAUSS1D", 2: "ESR15N", 3: "ESR14N"}
 
 
 def full_model(model, freqs, parameters):
@@ -244,6 +291,8 @@ def full_model(model, freqs, parameters):
         model = esr14n
     elif model == "ESR15N":
         model = esr15n
+    elif model == 'GAUSS1D':
+        model = gauss1d
     elif model == "ESRSINGLE":
         model = esrsingle
     else:

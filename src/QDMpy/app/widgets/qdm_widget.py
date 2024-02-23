@@ -557,7 +557,10 @@ class QDMWidget(QMainWindow):
 
     @property
     def model(self):
-        return [None, models.esrsingle, models.esr15n, models.esr14n][
+        # return [None, models.esrsingle, models.esr15n, models.esr14n][
+        #     self.qdm._diamond_type
+        # ]
+        return [None, models.gauss1d, models.esr15n, models.esr14n][
             self.qdm._diamond_type
         ]
 
