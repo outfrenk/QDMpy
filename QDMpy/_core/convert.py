@@ -1,9 +1,50 @@
+"""
+This module contains various functions to convert magnetic field vectors to
+resonance frequencies and vice versa. It also performs conversions of maps and
+signals. The following functions are implemented:
+    
+    b111_to_bxyz(bmap: numpy.np.ndarray, pixel_size: float = 1.175e-06,
+    rotation_angle: float = 0, direction_vector: Union[Tuple[float, float,
+    float], None] = None) -> numpy.np.ndarray:
+        This function converts a map measured along direction "u" to a Bz map of
+        the sample. It takes a numpy np.ndarray for the map, as well as pixel size,
+        rotation angle, and direction vector defaulting to (180°,35.3°).
+    \n    get_unit_vector(rotation_angle: float, direction_vector:
+    Union[Tuple[float, float, float], None] = None) -> numpy.np.ndarray:
+        This function takes the rotation angle and direction vector to output a
+        normalized unit vector.
+        
+    b2shift(b: float, in_unit: str = "T", out_unit: str = "GHz") -> float:
+        This function converts a magnetic field along as single NV-axis into a
+        resonance freq. shift for that axis. It takes the field, and inputs for
+        the field unit (in_unit) and output resonance frequency unit (out_unit).
+        
+    convert_to_unit(value, in_unit, out_unit):
+        This function converts a value from in_unit to out_unit. It takes the
+        value and input/output units in string format.
+        
+    freq2b(freq: float, in_unit: str = "Hz", out_unit: str = "T") -> float:
+        This function converts a resonance frequency into a magnetic field along
+        as single NV-axis. It takes the frequency and inputs for the frequency
+        unit (in_unit) and output field unit (out_unit).
+    
+    shift2b(shift: float, in_unit: str = "GHz", out_unit: str = "T") -> float:
+        This function converts a resonance frequency shift into a magnetic field
+        along as single NV-axis. It takes the frequency shift and inputs for the
+        frequency shift unit (in_unit) and output field unit (out_unit).
+    
+    project(a: numpy.np.ndarray, b: numpy.np.ndarray, c: numpy.np.ndarray):
+        This function projects a vector a onto b and returns the result in c. It
+        takes numpy np.ndarrays for vectors a and b, and an empty numpy np.ndarray, c,
+        to store the result.
+"""
+
 from typing import Tuple, Union
+
 
 import numpy as np
 import pint
 from numba import float64, guvectorize, vectorize
-from numpy.typing import NDArray
 
 import QDMpy
 
@@ -11,67 +52,66 @@ UREG = pint.UnitRegistry()
 
 _VECTOR_OR_NONE = Union[Tuple[float, float, float], None]
 
-""" convert.py contains a number of functions used to convert, signals, maps and frequencies. 
-"""
-
 
 def b111_to_bxyz(
-    bmap: NDArray,
-    pixel_size: float = 1.175e-06,
-    rotation_angle: float = 0,
-    direction_vector: _VECTOR_OR_NONE = None,
-) -> NDArray:
+    bmap: np.ndarray,
+    pixel_size_in_m: float = 1.175e-06,
+    rotation_angle_in_degrees: float = 0,
+    direction_vector: Tuple[float, float, float] = (0, 0, 1),
+) -> np.ndarray:
     """
     Convert a map measured along the direction u to a Bz map of the sample.
 
     Args:
         bmap: 2D array
             The map to be converted
-        pixel_size: float
-            The size of the pixel in the map in m
-        rotation_angle: float
-            The rotation of the diamond lattice axes around z-axis
-        direction_vector:
-            The direction of the 111 axis with respect to the QDM measurement frame. Default (180°, 35.3°)
-
+        pixel_size_in_m: float
+            The size of the pixel in the map in meters
+        rotation_angle_in_degrees: float
+            The rotation of the diamond lattice axes around z-axis in degrees
+        direction_vector: Tuple of 3 floats
+            The direction of the 111 axis with respect to the QDM measurement
+            frame. Default (0, 0, 1) implies Bz map along z-axis
 
     Returns:
-        2D array
-            The converted map
+        2D numpy.np.ndarray
+            The converted map in form of a 3D array of (map_x.real, map_y.real, map_z.real)
     """
 
-    unit_vector = get_unit_vector(rotation_angle, direction_vector)
+    # Calculate the unit vector from rotation angle and direction vector
+    unit_vector = get_unit_vector(rotation_angle_in_degrees, direction_vector)
 
-    ypix, xpix = bmap.shape
-    step_size = 1 / pixel_size
+    # Get the shape of the input map
+    num_rows, num_cols = bmap.shape
 
-    # these freq. coordinates match the fft algorithm
+    # Calculate the step size using pixel size
+    step_size = 1 / pixel_size_in_m
+
+    # Calculate frequency coordinates
     fx = (
-        np.concatenate([np.arange(0, xpix / 2, 1), np.arange(-xpix / 2, 0, 1)])
+        np.concatenate([np.arange(0, num_cols / 2, 1), np.arange(-num_cols / 2, 0, 1)])
         * step_size
-        / xpix
+        / num_cols
     )
     fy = (
-        np.concatenate([np.arange(0, ypix / 2, 1), np.arange(-ypix / 2, 0, 1)])
+        np.concatenate([np.arange(0, num_rows / 2, 1), np.arange(-num_rows / 2, 0, 1)])
         * step_size
-        / ypix
+        / num_rows
     )
-
     fgrid_x, fgrid_y = np.meshgrid(fx + 1e-30, fy + 1e-30)
 
+    # Calculate kx and ky
     kx = 2 * np.pi * fgrid_x
     ky = 2 * np.pi * fgrid_y
     k = np.sqrt(kx**2 + ky**2)
 
+    # Calculate the frequency response filter for x, y, and z components
     e = np.fft.fft2(bmap)
-
     x_filter = -1j * kx / k
     y_filter = -1j * ky / k
-    z_filter = k / (
-        unit_vector[2] * k - unit_vector[1] * 1j * ky - unit_vector[0] * 1j * kx
-    )  # calculate the filter frequency response associated with the x component
+    z_filter = k / (unit_vector[2] * k - unit_vector[1] * 1j * ky - unit_vector[0] * 1j * kx)
 
-   
+    # Calculate map_x, map_y and map_z using inverse Fourier transform and stack them to make the returned array
     map_z = np.fft.ifft2(e * z_filter)
     map_x = np.fft.ifft2(e * z_filter * x_filter)
     map_y = np.fft.ifft2(e * z_filter * y_filter)
@@ -79,9 +119,7 @@ def b111_to_bxyz(
     return np.stack([map_x.real, map_y.real, map_z.real])
 
 
-def get_unit_vector(
-    rotation_angle: float, direction_vector: _VECTOR_OR_NONE = None
-) -> NDArray:
+def get_unit_vector(rotation_angle: float, direction_vector: _VECTOR_OR_NONE = None) -> np.ndarray:
     """
     Get the unit vector of the sample in the lab frame.
 
@@ -134,7 +172,7 @@ def _b2shift(b: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
 
 
 @vectorize([float64(float64)])
-def _shift2b(shift: Union[float, list, NDArray]):
+def _shift2b(shift: Union[float, list, np.ndarray]):
     """converts a resonance freq. shift into a magnetic field in Tesla along as single NV-axis.
 
     Args:
@@ -241,7 +279,7 @@ def shift2b(shift: float, in_unit: str = "GHz", out_unit: str = "T") -> float:
 
 
 @guvectorize([(float64[:], float64[:], float64[:])], "(n),(n)->()", forceobj=True)
-def project(a: NDArray, b: NDArray, c: NDArray):
+def project(a: np.ndarray, b: np.ndarray, c: np.ndarray):
     """projects vector a onto b and returns the result in c
 
     Args:

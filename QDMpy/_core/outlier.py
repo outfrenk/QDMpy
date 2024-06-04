@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from typing import Any, List, Tuple, Union
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
-
+from numpy.typing import ArrayLike
 import QDMpy
 import QDMpy.utils
 
@@ -17,9 +16,7 @@ class Outlier(ABC):
     def settings(self) -> dict:
         if self._settings is None:
             if self.__class__.__name__ in QDMpy.SETTINGS["outlier_detection"]:
-                self._settings = QDMpy.SETTINGS["outlier_detection"][
-                    self.__class__.__name__
-                ]
+                self._settings = QDMpy.SETTINGS["outlier_detection"][self.__class__.__name__]
             else:
                 self.LOG.warning(
                     f"Settings for {self.__class__.__name__} not found in QDMpy.SETTINGS"
@@ -29,7 +26,7 @@ class Outlier(ABC):
 
     def __init__(self, data_shape: Tuple[int, ...]) -> None:
         self.data_shape = data_shape
-        self.outliers: NDArray = np.zeros(self.data_shape, dtype=bool)
+        self.outliers: np.ndarray = np.zeros(self.data_shape, dtype=bool)
         self.LOG.debug(
             f"{self.__class__.__name__} initialized with data of shape {self.data_shape}"
         )
@@ -42,6 +39,10 @@ class Outlier(ABC):
     @property
     def n(self):
         return self.outliers.sum()
+
+    def reset(self):
+        """Reset the outliers array to all False values."""
+        self.outliers = np.zeros(self.data_shape, dtype=bool)
 
     def __repr__(self) -> str:
         return f"Outlier(b111={self.data_shape})"
@@ -56,10 +57,10 @@ class StatisticsPercentile(Outlier):
 
     def __init__(
         self,
-        b111: NDArray,
-        chi2: NDArray,
-        width: NDArray,
-        mean_contrast: NDArray,
+        b111: np.ndarray,
+        chi2: np.ndarray,
+        width: np.ndarray,
+        mean_contrast: np.ndarray,
         **kwargs,
     ):
         """
@@ -85,12 +86,8 @@ class StatisticsPercentile(Outlier):
 
         self.data_shape = self.b111.shape
         self.detected = False
-        self._chi2_percentile = kwargs.pop(
-            "chi2_percentile", self.settings["chi2_percentile"]
-        )
-        self._width_percentile = kwargs.pop(
-            "width_percentile", self.settings["width_percentile"]
-        )
+        self._chi2_percentile = kwargs.pop("chi2_percentile", self.settings["chi2_percentile"])
+        self._width_percentile = kwargs.pop("width_percentile", self.settings["width_percentile"])
         self._contrast_percentile = kwargs.pop(
             "contrast_percentile", self.settings["contrast_percentile"]
         )
@@ -107,24 +104,29 @@ class StatisticsPercentile(Outlier):
     # PROPERTIES AND SETTERS
     @property
     def chi2_percentile(self):
+        """Getter for the percentile range of the chi2 statistic"""
         return self._chi2_percentile
 
     @chi2_percentile.setter
     def chi2_percentile(self, chi2_percentile):
+        """Setter for the percentile range of the chi2 statistic"""
         self._chi2_percentile = chi2_percentile
         self.set_range("chi2", self.chi2, chi2_percentile)
 
     @property
     def width_percentile(self):
+        """Getter for the percentile range of the width"""
         return self._width_percentile
 
     @width_percentile.setter
     def width_percentile(self, width_percentile):
+        """Setter for the percentile range of the width"""
         self._width_percentile = width_percentile
         self.set_range("width", self.width, width_percentile)
 
     @property
     def contrast_percentile(self):
+        """Getter for the percentile range of the contrast"""
         return self._contrast_percentile
 
     @contrast_percentile.setter
@@ -144,32 +146,38 @@ class StatisticsPercentile(Outlier):
     def contrast_range(self):
         return self._contrast_range
 
-    # METHODS
-
     def set_ranges(self, chi2_percentile, contrast_percentile, width_percentile):
+        """
+        Set the percentiles for chi2, contrast, and width.
+
+        Args:
+            chi2_percentile: Tuple of two floats that represent the lower and upper
+                             percentiles for chi2.
+            contrast_percentile: Tuple of two floats that represent the lower and upper
+                                  percentiles for mean contrast.
+            width_percentile: Tuple of two floats that represent the lower and upper
+                              percentiles for width.
+        """
         self.set_range("chi2", self.chi2, chi2_percentile)
         self.set_range("contrast", self.mean_contrast, contrast_percentile)
         self.set_range("width", self.width, width_percentile)
 
-    def detect_outlier(
-        self, chi2_percentile=None, width_percentile=None, contrast_percentile=None
-    ):
+    def detect_outlier(self, chi2_percentile=None, width_percentile=None, contrast_percentile=None):
         """
         Detect outliers in the statistics.
 
-        Parameters
-        ----------
-        chi2_percentile : [float, float], optional
-            The upper and lower percentile for the chi2 statistic. The default is None.
-        width_percentile : [float, float], optional
-            The upper and lower percentile for the width. The default is None.
-        contrast_percentile : [float, float], optional
-            The upper and lower percentile for the contrast. The default is None.
-        """
+        Args:
+            chi2_percentile: Tuple of two floats that represent the lower and upper
+                             percentiles for chi2 (Default value = None).
+            width_percentile: Tuple of two floats that represent the lower and upper
+                              percentiles for width (Default value = None).
+            contrast_percentile: Tuple of two floats that represent the lower and upper
+                                  percentiles for mean contrast (Default value = None).
 
-        # if all are None it uses the internal values
-        # so that the outliers can be recalculated
-        if not all(
+        Returns:
+            np.ndarray: Array of booleans indicating whether each pixel is an outlier or not.
+        """
+        if not any(
             [
                 chi2_percentile is None,
                 width_percentile is None,
@@ -180,28 +188,53 @@ class StatisticsPercentile(Outlier):
 
         self.chi2_outlier = self.get_outlier_from(self.chi2, self.chi2_range)
         self.width_outlier = self.get_outlier_from(self.width, self.width_range)
-        self.contrast_outlier = self.get_outlier_from(
-            self.mean_contrast, self.contrast_range
-        )
+        self.contrast_outlier = self.get_outlier_from(self.mean_contrast, self.contrast_range)
 
         self.outliers = self.chi2_outlier | self.width_outlier | self.contrast_outlier
         self.detected = True
         return self.outliers
 
     def get_outlier_from(self, data, percentiles):
+        """
+        Determine whether each pixel is an outlier or not.
+
+        Args:
+            data: The statistics data to check for outliers.
+            percentiles: The percentiles to use for outlier detection.
+
+        Returns:
+            np.ndarray: Array of booleans indicating whether each pixel is an outlier or not.
+        """
         smaller = data < percentiles[0]
         larger = data > percentiles[1]
         return np.any(smaller, axis=(0, 1)) | np.any(larger, axis=(0, 1))
 
-    def set_range(self, dtype, data, percentile):
+    def set_range(
+        self, dtype: str, data: np.ndarray, percentile: Tuple[float, float]
+    ) -> np.ndarray:
+        """
+        Set the range for the specified dtype.
+
+        Args:
+            dtype: The data type for which the range should be set.
+            data: The data from which the range should be set.
+            percentile: The percentile values to be used for setting the range.
+
+        Returns:
+            The new range for the specified dtype.
+
+        Raises:
+            None.
+
+        """
         data_range = np.percentile(data, percentile)
         self.LOG.debug(
-            f"setting {dtype} range to {data_range} out of {[data.min(), data.max()]} ({percentile})"
+            f"Setting {dtype} range to {data_range} out of {[data.min(), data.max()]} ({percentile})"
         )
         setattr(self, f"_{dtype}_range", data_range)
         if self.detected:
             self.LOG.warning(
-                f"parameter range for {dtype} changed, outlier detection needs to be rerun"
+                f"Parameter range for {dtype} changed, outlier detection needs to be rerun."
             )
             self.detected = False
         return data_range
@@ -225,7 +258,7 @@ class LocalOutlierFactor(Outlier):
         self.settings.update(kwargs)
         self.data = data
 
-    def detect_outlier(self, **kwargs) -> NDArray:
+    def detect_outlier(self, **kwargs) -> np.ndarray:
         """
         Detect outliers using the LocalOutlierFactor algorithm.
         A pixel is considered and outlier if it is considered an outlier in one polarization or frequency range.
@@ -236,7 +269,7 @@ class LocalOutlierFactor(Outlier):
                 See https://scikit-learn.org/stable/modules/generated/sklearn.neighbors.LocalOutlierFactor.html
 
         Returns:
-            NDArray: boolean array with the same shape as the data ([y,x]) with True for outliers
+            np.ndarray: boolean array with the same shape as the data ([y,x]) with True for outliers
             and False for inliers
 
         """
@@ -250,9 +283,7 @@ class LocalOutlierFactor(Outlier):
         self.outliers = lof.fit_predict(data)
         self.outliers = self.outliers.reshape(initial_shape[:-1])
         self.outliers = np.any(self.outliers == -1, axis=(0, 1))
-        self.LOG.info(
-            f"detected {self.outliers.sum()} outliers ({self.outliers.shape})"
-        )
+        self.LOG.info(f"detected {self.outliers.sum()} outliers ({self.outliers.shape})")
         self.outliers = self.outliers.reshape(self.data_shape)
         return self.outliers
 
