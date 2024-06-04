@@ -139,8 +139,8 @@ class QDMpyApp(QMainWindow):
 
         self._data_windows = []
 
-        if self.debug:
-            self.debug_call()
+        #if self.debug:
+        #    self.debug_call()
 
     # TOOLBAR
     def get_toolbar(self):

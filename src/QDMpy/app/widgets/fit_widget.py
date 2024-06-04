@@ -59,6 +59,7 @@ class FitWidget(QDMWidget):
                 )
 
     def add_odmr(self, mean=False):
+        
         self.canvas.update_odmr(
             self.qdm.odmr.f_ghz,
             data=self.get_current_odmr(),

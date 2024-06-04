@@ -67,7 +67,6 @@ class QDM:
                 See Also: QDMpy._core.models.guess_model_name
 
         """
-
         self.LOG.info("Initializing QDM object.")
         self.LOG.info(f'Working directory: "{working_directory}"')
         self.working_directory = Path(working_directory)
@@ -81,7 +80,9 @@ class QDM:
 
         self._B111 = None
 
-        self._fit = self.new_fit(model_name=model_name)
+        # self._fit = self.new_fit(model_name="GAUSS1D")
+        self._fit = self.new_fit(model_name="ESR15N")
+        # self._fit = self.new_fit(model_name=model_name)
 
         self.pixel_size = pixel_size  # 4 um
 
@@ -547,7 +548,7 @@ class QDM:
             data_struct[bin_factor]["b111"] = deepcopy(self.b111)
             data_struct[bin_factor]["chi2"] = self.fit.get_param("chi2").copy()
             data_struct[bin_factor]["fit"] = self.fit._fit_results.copy()
-        print(data_struct)
+
         savemat(path_to_file, data_struct)
 
     # CALCULATIONS ###
