@@ -39,6 +39,7 @@ if not __package__:
 
 # Following import must be after setup_package_paths
 from QDMpy.odmr.odmr import ODMR  # noqa: E402
+import guess
 
 LOG = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class Measurement:
         light_image: NDArray,
         laser_image: NDArray,
         output_directory: str | Path | PathLike,
-        pixel_spacing: float = 4e-6,
+        pixel_spacing: float = 1e-6,
         fit_model: str = 'auto',
     ) -> None:
         """Initialize the Measurement object.
@@ -81,7 +82,7 @@ class Measurement:
             laser_image (NDArray): Laser image array with shape (height, width).
             output_directory (Union[str, Path, PathLike]): Path to the output directory.
             pixel_spacing (float): Spacing between pixels in meters (pixel size).
-                Default is 4 µm (4e-6).
+                Default is 1 µm (1e-6).
             fit_model (str): Name of the model used for fitting ODMR spectra. Default is "auto".
                             If "auto", the model is chosen based on the mean ODMR data.
 
@@ -111,9 +112,9 @@ class Measurement:
         LOG.debug('ODMR raw data shape: %s', self.odmr.raw_data.shape)
 
         # Check if data has been processed
-        try:
+        if self.odmr.is_processed:
             LOG.debug('ODMR processed data shape: %s', self.odmr.processed_data.shape)
-        except ValueError:
+        else:
             LOG.warning('ODMR data has not been processed yet. Some functionality may be limited.')
 
         LOG.debug('ODMR frequencies shape: %s', self.odmr.raw_data.frequencies.shape)
@@ -127,11 +128,41 @@ class Measurement:
         self.light_image = light_image
         self.laser_image = laser_image
 
-        # Initialize B111 field and fit model
+        # Initialize B111 field, fit model, and initial parameters
         LOG.debug('Initializing B111 field and fit model.')
         self._B111: NDArray | None = None
         # Placeholder for future fit integration
         self._fit_model = fit_model
+        self._initial_parameters: NDArray | None = None
+
+    def fit_odmr(self):
+        """Fit the Measurement object according to the Diamond model."""
+        # Select data to use
+        # first we need the initial guesses before making a call to pygpufit.gpufit.fit_constrained
+        if self.odmr.is_processed:
+            data = self.odmr.processed_data
+        else:
+            data = self.odmr.raw_data
+        # find diamond model if auto
+        if self._fit_model == 'auto':
+            self._fit_model = guess.guess_model(data.data)
+        # make guesses
+        LOG.info("Starting initial guess for ODMR data using %s diamond model", self._fit_model)
+        self._initial_parameters = guess.guess_initial_fit_parameters(
+            data.data,
+            data.frequencies,
+            self._fit_model
+        )
+        # fit it
+        # TODO: add option for GPU or CPU
+        n_pol, n_pix, n_freqs = data.shape
+        data = data.reshape((-1, n_freqs))
+        n_pixel = data.shape[0]
+        constraints = self.get_constraints_array(n_pixel)
+        constraint_types = self.get_constraint_types()
+
+
+        self._B111
 
     def __str__(self) -> str:
         """Return a string representation of the Measurement object.
