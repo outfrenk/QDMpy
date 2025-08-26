@@ -27,7 +27,7 @@ if not __package__:
     project_root = os.path.abspath(os.path.join(current_dir, '..'))
     sys.path.insert(0, project_root)
 
-from QDMpy.constants import DEFAULT_VMAX, DEFAULT_VMIN, PROMINENCE
+import QDMpy.constants as qcon
 from QDMpy.exceptions import ModelGuessNotPossible
 from QDMpy.models import ModelRegistry
 
@@ -116,10 +116,10 @@ def guess_n_peaks(data: NDArray) -> tuple[int, bool, list[NDArray]]:
         ValueError: If the data array does not have 4 dimensions.
     """
     validate_array(data, 4, 'data')
-    median_data = np.median(data, axis=3)
+    median_data = np.median(data, axis=2)
     indices = [
-        find_peaks(-median_data[p, f], prominence=PROMINENCE)[0]
-        for p, f in np.ndindex(*data.shape[:2])
+        find_peaks(-median_data[p, f], prominence=qcon.PROMINENCE)[0]
+        for p, f in np.ndindex(*data.shape[np.array([0, 1, 3])])
     ]
     n_peaks = int(np.round(np.mean([len(idx) for idx in indices])))
     doubt = np.std([len(idx) for idx in indices]) != 0
@@ -163,28 +163,27 @@ def guess_initial_fit_parameters(data: NDArray, freq: NDArray, model: Model) -> 
     """
     # Define parameter guessers for each parameter type
     parameter_guessers = {
-        'center': lambda: guess_center(data, freq),
+        'center': lambda: guess_center(data, freq.reshape(data.shape[1], -1)),
         'contrast': lambda: guess_contrast(data),
-        'width': lambda: guess_width(data, freq, DEFAULT_VMIN, DEFAULT_VMAX),
+        'width': lambda: guess_width(data, freq.reshape(data.shape[1], -1), qcon.DEFAULT_VMIN, qcon.DEFAULT_VMAX),
         'offset': lambda: np.ones((
             data.shape[0],
             data.shape[1],
-            data.shape[3],
+            data.shape[2],
         )),  # Default offset is 1
     }
-
     # Initialize list for parameter arrays
     fit_parameters = []
 
     # Guess each parameter defined in the model
     for param in model.parameters_unique:
         param_type = param.split('_')[0]  # Extract parameter type (e.g., 'width')
-        LOG.info(f'Calculating initial guess for {param_type}')
         if param_type in parameter_guessers:
-            fit_parameters.append(parameter_guessers[param_type]())
+            guess = parameter_guessers[param_type]()
+            LOG.debug(f'Initial guess for {param_type} is {guess}')
+            fit_parameters.append(guess)
         else:
             raise ValueError(f"Parameter '{param}' has no defined guess method.")
-
     # Stack parameters along the last axis
     return np.stack(fit_parameters, axis=-1)
 
@@ -202,12 +201,12 @@ def guess_contrast(data: NDArray) -> NDArray:
     Returns:
         NDArray: 3D array of contrast values (n_polarity, n_range, n_pixels).
     """
-    amp = np.zeros((data.shape[0], data.shape[1], data.shape[3]))
+    amp = np.zeros((data.shape[0], data.shape[1], data.shape[2]))
     for polarity in range(data.shape[0]):
         for freq_range in range(data.shape[1]):
-            for pixel in range(data.shape[3]):  # Changed prange to range and fixed index
+            for pixel in range(data.shape[2]):  # Changed prange to range and fixed index
                 amp[polarity, freq_range, pixel] = guess_contrast_pixel(
-                    data[polarity, freq_range, :, pixel],
+                    data[polarity, freq_range, pixel, :],
                 )
     return amp
 
@@ -243,12 +242,12 @@ def guess_center(data: NDArray, freq: NDArray) -> NDArray:
     centers = np.zeros((
         data.shape[0],
         data.shape[1],
-        data.shape[3],
+        data.shape[2],
     ))  # Result shape: (n_polarity, n_range, n_pixels)
     for p in range(data.shape[0]):
         for r in range(data.shape[1]):
-            for px in range(data.shape[3]):  # Changed prange to range
-                centers[p, r, px] = guess_center_pixel(data[p, r, :, px], freq)
+            for px in range(data.shape[2]):  # Changed prange to range
+                centers[p, r, px] = guess_center_pixel(data[p, r, px, :], freq[r])
     return centers
 
 
@@ -284,13 +283,13 @@ def guess_width(data: NDArray, freq: NDArray, vmin: float, vmax: float) -> NDArr
     widths = np.zeros((
         data.shape[0],
         data.shape[1],
-        data.shape[3],
+        data.shape[2],
     ))  # Result shape: (n_polarity, n_range, n_pixels)
     for p in range(data.shape[0]):
         for r in range(data.shape[1]):
-            for px in range(data.shape[3]):  # Changed prange to range
+            for px in range(data.shape[2]):  # Changed prange to range
                 widths[p, r, px] = guess_width_pixel(
-                    data[p, r, :, px], freq, vmin, vmax,
+                    data[p, r, px, :], freq[r], vmin, vmax,
                 )
     return widths
 
