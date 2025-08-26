@@ -38,9 +38,14 @@ if not __package__:
 
 
 # Following import must be after setup_package_paths
+import QDMpy.constants as qcon
 from QDMpy.odmr.odmr import ODMR  # noqa: E402
-import guess
-
+from QDMpy import guess
+try:
+    import pygpufit.gpufit as gf
+    GPUFIT_PRESENT = True
+except ModuleNotFoundError:
+    GPUFIT_PRESENT = False
 LOG = logging.getLogger(__name__)
 
 
@@ -135,34 +140,182 @@ class Measurement:
         self._fit_model = fit_model
         self._initial_parameters: NDArray | None = None
 
-    def fit_odmr(self):
+    def fit_odmr(self, fit_method: str = 'auto'):
         """Fit the Measurement object according to the Diamond model."""
         # Select data to use
         # first we need the initial guesses before making a call to pygpufit.gpufit.fit_constrained
         if self.odmr.is_processed:
-            data = self.odmr.processed_data
+            odmrdata = self.odmr.processed_data
         else:
-            data = self.odmr.raw_data
+            odmrdata = self.odmr.raw_data
         # find diamond model if auto
         if self._fit_model == 'auto':
-            self._fit_model = guess.guess_model(data.data)
+            self._fit_model = guess.guess_model(odmrdata.data)
         # make guesses
         LOG.info("Starting initial guess for ODMR data using %s diamond model", self._fit_model)
         self._initial_parameters = guess.guess_initial_fit_parameters(
-            data.data,
-            data.frequencies,
+            odmrdata.data,
+            odmrdata.frequencies,
             self._fit_model
         )
+        LOG.debug(f"Initial parameters have shape: {self._initial_parameters.shape}")
+        if fit_method == 'auto':
+            if GPUFIT_PRESENT:
+                self.gpufit(odmrdata)
+            else:
+                # TODO: add option for CPU
+                self.cpufit(odmrdata)
+        elif fit_method != 'gpufit' or fit_method != 'cpufit':
+            raise Exception(f"Fit method {fit_method} is not supported.")
+        else:
+            {'gpufit': self.gpufit(odmrdata), 'cpufit':self.cpufit(odmrdata)}[fit_method]()
+
+    def gpufit(self, odmrdata: NDArray) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+        """Calculates the fit parameters for the GPU model for diamond model."""
+        LOG.info(f"Using gpufit method")
         # fit it
-        # TODO: add option for GPU or CPU
-        n_pol, n_pix, n_freqs = data.shape
-        data = data.reshape((-1, n_freqs))
-        n_pixel = data.shape[0]
-        constraints = self.get_constraints_array(n_pixel)
-        constraint_types = self.get_constraint_types()
+        n_pol, f_range, n_pix, n_freqs = odmrdata.shape
+        constraint_list = self._fit_model.get_constraint_array
+        constraint_types = np.array(constraint_list[:, 2].flatten()).astype(np.int32)
+        constraint_pixel = np.tile(np.array(constraint_list[:, :2].flatten()).astype(np.float32),
+                                   (n_pix * n_pol, 1))
+        # initialize empty parameter variable
+        self.parameters = np.zeros((n_pol, f_range, n_pix, len(constraint_types)))
+        states = np.zeros_like(self.parameters)
+        chi_squares = np.zeros_like(self.parameters)
+        iterations = np.zeros_like(self.parameters)
+
+        for i in np.arange(0, f_range):
+            frange = odmrdata.frequencies.reshape(f_range, n_freqs)
+            frange_typ = frange / 1e9
+            LOG.info(f"Fitting frange {i} from {frange_typ[i].min():.3f}-{frange_typ[i].max():.3f} GHz")
+            data_input = odmrdata.data[:, i].reshape((-1, n_freqs))
+
+            parameters, state, chi_square, iteration, comp_time = gf.fit_constrained(
+                data=np.ascontiguousarray(data_input, dtype=np.float32),
+                user_info=np.ascontiguousarray(frange, dtype=np.float32),
+                constraints=np.ascontiguousarray(constraint_pixel, dtype=np.float32),
+                constraint_types=constraint_types,
+                initial_parameters=np.ascontiguousarray(
+                    self._initial_parameters[:, i].reshape(-1, len(self._fit_model.parameters_unique)), dtype=np.float32),
+                weights=None,
+                model_id=self._fit_model.model_id,
+                max_number_iterations=1000,
+                tolerance=1e-10
+            )
+            self.parameters[:, i] = parameters.reshape((n_pol, n_pix, -1))
+            states[:, i] = state.reshape((n_pol, n_pix, -1))
+            chi_squares[:, i] = chi_square.reshape((n_pol, n_pix, -1))
+            iterations[:, i] = iteration.reshape((n_pol, n_pix, -1))
+
+            LOG.info(f"Fitting finished in {comp_time:2.1f} seconds.")
+            LOG.debug(f"Nr of iterations: {iterations[:, i]}")
+        return states, chi_squares, iterations, iterations
+
+    def calculate_b_field(self, bz: bool = True):
+        """Calculate the B111 field and optionally the Bz-field."""
+        # resonance
+        mean_resonance = (self.parameters[:, 1, :, 0] - self.parameters[:, 0, :, 0]) / 2
+        b111_remanence = ((mean_resonance[1] - mean_resonance[0]) / qcon.GAMMA / 2).reshape(self.light_image.shape)
+        b111_induced = ((mean_resonance[1] + mean_resonance[0]) / qcon.GAMMA / 2).reshape(self.light_image.shape)
+
+        if bz:
+            return self.b111_to_bxyz(b111_remanence)
+        else:
+            return b111_remanence, b111_induced
+
+    def b111_to_bxyz(self, bmap: NDArray, pixel_size: float = 1.2e-06,
+                     rotation_angle: float = 0, direction_vector = None
+                     ) -> NDArray:
+        """
+        Convert a map measured along the direction u to a Bz map of the sample.
+
+        Args:
+            bmap: 2D array
+                The map to be converted
+            pixel_size: float
+                The size of the pixel in the map in m
+            rotation_angle: float
+                The rotation of the diamond lattice axes around z-axis
+            direction_vector:
+                The direction of the 111 axis with respect to the QDM measurement frame. Default (180°, 35.3°)
 
 
-        self._B111
+        Returns:
+            2D array
+                The converted map
+        """
+
+        unit_vector = self.get_unit_vector(rotation_angle, direction_vector)
+
+        ypix, xpix = bmap.shape
+        step_size = 1 / pixel_size
+
+        # these freq. coordinates match the fft algorithm
+        fx = (
+                np.concatenate([np.arange(0, xpix / 2, 1), np.arange(-xpix / 2, 0, 1)])
+                * step_size
+                / xpix
+        )
+        fy = (
+                np.concatenate([np.arange(0, ypix / 2, 1), np.arange(-ypix / 2, 0, 1)])
+                * step_size
+                / ypix
+        )
+
+        fgrid_x, fgrid_y = np.meshgrid(fx + 1e-30, fy + 1e-30)
+
+        kx = 2 * np.pi * fgrid_x
+        ky = 2 * np.pi * fgrid_y
+        k = np.sqrt(kx ** 2 + ky ** 2)
+
+        e = np.fft.fft2(bmap)
+
+        x_filter = -1j * kx / k
+        y_filter = -1j * ky / k
+        z_filter = k / (
+                unit_vector[2] * k - unit_vector[1] * 1j * ky - unit_vector[0] * 1j * kx
+        )  # calculate the filter frequency response associated with the x component
+
+        map_z = np.fft.ifft2(e * z_filter)
+        map_x = np.fft.ifft2(e * z_filter * x_filter)
+        map_y = np.fft.ifft2(e * z_filter * y_filter)
+
+        return np.stack([map_x.real, map_y.real, map_z.real])
+
+    def get_unit_vector(self,
+            rotation_angle: float, direction_vector = None
+                        ) -> NDArray:
+        """
+        Get the unit vector of the sample in the lab frame.
+
+        Args:
+            rotation_angle: float
+                The rotation of the diamond lattice axes around z-axis
+            direction_vector:
+                The direction of the 111 axis with respect to the QDM measurement frame. Default (180°, 35.3°)
+
+        Returns:
+            A normalized unit vector in the instrument frame
+        """
+
+        if direction_vector is None:
+            direction_vector = np.array([0, np.sqrt(2 / 3), np.sqrt(1 / 3)])
+
+        LOG.info(
+            f"Getting unit vector from rotation angle {rotation_angle} along direction vector {direction_vector}"
+        )
+
+        alpha = np.rad2deg(rotation_angle)
+        rotation_matrix = [
+            [np.cos(alpha), -np.sin(alpha), 0],
+            [np.sin(alpha), np.cos(alpha), 0],
+            [0, 0, 1],
+        ]
+
+        unit_vector = np.matmul(rotation_matrix, direction_vector)
+        unit_vector /= np.linalg.norm(unit_vector)
+        return unit_vector
 
     def __str__(self) -> str:
         """Return a string representation of the Measurement object.
