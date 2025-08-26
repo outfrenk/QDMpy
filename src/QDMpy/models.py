@@ -19,13 +19,12 @@ from QDMpy.utils import setup_package_paths
 
 setup_package_paths()
 
-from QDMpy import SETTINGS  # noqa: E402
-from QDMpy.constants import AHYP_14N, AHYP_15N  # noqa: E402
+import QDMpy.constants as qcon  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 
 
-def esr14n(x: NDArray, parameter: NDArray, ahyp: float = AHYP_14N) -> NDArray:
+def esr14n(x: NDArray, parameter: NDArray, ahyp: float = qcon.AHYP_14N) -> NDArray:
     """Evaluate the ESR14N model.
 
     This function calculates the ESR14N model response for a given set of input
@@ -64,7 +63,7 @@ def esr14n(x: NDArray, parameter: NDArray, ahyp: float = AHYP_14N) -> NDArray:
     return np.array(out)
 
 
-def esr15n(x: NDArray, parameter: NDArray, ahyp: float = AHYP_15N) -> NDArray:
+def esr15n(x: NDArray, parameter: NDArray, ahyp: float = qcon.AHYP_15N) -> NDArray:
     """Evaluate the ESR15N model.
 
     This function calculates the 15N Diamond model response for a given set of input
@@ -143,17 +142,19 @@ class Model(ABC):
         n_peaks: Number of resonance peaks in the model.
     """
 
-    def __init__(self: Model, name: str, n_peaks: int, parameters_unique: list[str]) -> None:
+    def __init__(self: Model, name: str, n_peaks: int, parameters_unique: list[str], model_id: int) -> None:
         """Initialize a model with basic properties.
 
         Args:
             name: Unique identifier for the model.
             n_peaks: Number of resonance peaks in the model.
             parameters_unique: List of parameter names with unique identifiers.
+            model_id: integer representing model in pyGPUfit
         """
         self.name = name
         self.parameters_unique = parameters_unique
         self.n_peaks = n_peaks
+        self.model_id = model_id
 
     @property
     def parameter(self: Model) -> list[str]:
@@ -186,27 +187,33 @@ class Model(ABC):
         """
         return len(self.parameters_unique)
 
-    def get_constraint_array(self: Model, constraint: dict[str, Any]) -> NDArray:
+    @property
+    def get_constraint_array(self: Model, cons: object = qcon) -> NDArray:
         """Create an array of constraints for model parameters.
 
         Args:
-            constraint: Dictionary of constraints.
+            cons: object of constraints.
 
         Returns:
             Array of constraint values.
         """
-        constraint_array = []
-        for p in self.parameters_unique:
-            base_param = p.split('_')[0]
-            if base_param in constraint:
-                constraint_array.append(constraint[base_param][0])  # Lower bound
-                constraint_array.append(constraint[base_param][1])  # Upper bound
+        constraint_list = []
+        types = {"FREE": 0, "LOWER": 1, "UPPER": 2, "LOWER_UPPER": 3}
+        # Define parameter guessers for each parameter type
+        parameter_constraints = {
+            'center': lambda: np.array([cons.CENTER_MIN, cons.CENTER_MAX, types[cons.CENTER_TYPE]]),
+            'contrast': lambda: np.array([cons.CONTRAST_MIN, cons.CONTRAST_MAX, types[cons.CONTRAST_TYPE]]),
+            'width': lambda: np.array([cons.WIDTH_MIN, cons.WIDTH_MAX, types[cons.WIDTH_TYPE]]),
+            'offset': lambda: np.array([cons.OFFSET_MIN, cons.OFFSET_MAX, types[cons.OFFSET_TYPE]])
+        }
+        for param in self.parameters_unique:
+            param_type = param.split('_')[0]  # Extract parameter type (e.g., 'width')
+            if param_type in parameter_constraints:
+                item = parameter_constraints[param_type]()
+                constraint_list.append(item)
             else:
-                # Default constraints if not specified
-                constraint_array.append(-np.inf)  # No lower bound
-                constraint_array.append(np.inf)   # No upper bound
-
-        return np.array(constraint_array)
+                raise ValueError(f"Parameter '{param}' has no defined constraints.")
+        return np.array(constraint_list)
 
     def __repr__(self: Model) -> str:
         """Get a string representation of the model.
@@ -266,29 +273,6 @@ class ModelRegistry:
         """
         return cls._registry
 
-    @classmethod
-    def _initialize_constraints(cls: type[ModelRegistry], model: Model) -> dict[str, list[Any]]:
-        """Initialize default constraints for model parameters.
-
-        Uses the constraints defined in the configuration settings.
-
-        Args:
-            model: The model for which to initialize constraints.
-
-        Returns:
-            Dictionary mapping parameter names to constraint lists.
-        """
-        settings = SETTINGS['fit']['constraints']
-        constraints: dict[str, list[Any]] = {}
-
-        for param in model.parameters_unique:
-            base_param = param.split('_')[0]
-            constraints[param] = [
-                settings[f'{base_param}_min'],
-                settings[f'{base_param}_max'],
-                settings[f'{base_param}_type'],
-            ]
-        return constraints
 
 class ESR14N(Model):
     """Model for NV centers with 14N nitrogen isotope.
@@ -301,9 +285,10 @@ class ESR14N(Model):
         super().__init__(
             'ESR14N',
             3,
-            ['contrast', 'center', 'width_0', 'width_1', 'width_2', 'offset'],
+            ['center', 'width', 'contrast_0', 'contrast_1', 'contrast_2', 'offset'],
+            13
         )
-        self.ahyp = AHYP_14N
+        self.ahyp = qcon.AHYP_14N
 
     def func(self: ESR14N, x: NDArray, parameters: NDArray) -> NDArray:
         """Calculate the model response for the given parameters.
@@ -327,9 +312,10 @@ class ESR15N(Model):
     def __init__(self: ESR15N) -> None:
         """Initialize ESR15N model with default parameters."""
         super().__init__(
-            'ESR15N', 2, ['contrast', 'center', 'width_0', 'width_1', 'offset'],
+            'ESR15N', 2, ['center', 'width', 'contrast_0', 'contrast_1', 'offset'],
+            14
         )
-        self.ahyp = AHYP_15N
+        self.ahyp = qcon.AHYP_15N
 
     def func(self: ESR15N, x: NDArray, parameters: NDArray) -> NDArray:
         """Calculate the model response for the given parameters.
@@ -352,7 +338,11 @@ class ESRSINGLE(Model):
     """
     def __init__(self: ESRSINGLE) -> None:
         """Initialize ESRSINGLE model with default parameters."""
-        super().__init__('ESRSINGLE', 1, ['contrast', 'center', 'width_0', 'offset'])
+        super().__init__('ESRSINGLE',
+                         1,
+                         ['center', 'width', 'contrast_0', 'offset'],
+                         15
+        )
 
     def func(self: ESRSINGLE, x: NDArray, parameters: NDArray) -> NDArray:
         """Calculate the model response for the given parameters.
@@ -368,8 +358,8 @@ class ESRSINGLE(Model):
 
 
 # Register models
-ModelRegistry.register('ESR14N', {'class': ESR14N, 'hyp': AHYP_14N})
-ModelRegistry.register('ESR15N', {'class': ESR15N, 'hyp': AHYP_15N})
+ModelRegistry.register('ESR14N', {'class': ESR14N, 'hyp': qcon.AHYP_14N})
+ModelRegistry.register('ESR15N', {'class': ESR15N, 'hyp': qcon.AHYP_15N})
 ModelRegistry.register('ESRSINGLE', {'class': ESRSINGLE, 'hyp': 0.0})
 
 if __name__ == '__main__':
